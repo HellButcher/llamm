@@ -1,12 +1,9 @@
-use futures::{StreamExt, TryStreamExt, poll, stream::FusedStream};
+use futures::{TryStreamExt, stream::FusedStream};
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    task::{
-        Poll::{self, Ready},
-        ready,
-    },
+    task::Poll::{self, Ready},
 };
 
 // ── Data models ──────────────────────────────────────────────────────────────
@@ -237,56 +234,6 @@ pub enum ModelUpdates {
 }
 
 impl Model {
-    /// Display name: first alias or the model id.
-    pub fn display_name(&self) -> &str {
-        if let Some(alias) = self.aliases.first() {
-            alias
-        } else {
-            &self.id
-        }
-    }
-
-    pub fn status_label(&self) -> &str {
-        match (self.status.value.as_str(), self.status.failed) {
-            ("unloaded", true) => "failed",
-            ("loaded", _) => "loaded",
-            ("loading", _) => "loading…",
-            ("downloading", _) => "downloading…",
-            ("sleeping", _) => "sleeping",
-            ("unloaded", _) => "unloaded",
-            _ => self.status.value.as_str(),
-        }
-    }
-
-    pub fn human_size(&self) -> String {
-        self.meta
-            .as_ref()
-            .and_then(|m| m.size)
-            .map(human_size)
-            .unwrap_or_else(|| "?".to_string())
-    }
-
-    /// Returns a modality icon based on input modalities.
-    pub fn modality_icon(&self) -> &'static str {
-        let mods = self
-            .architecture
-            .as_ref()
-            .map(|a| a.input_modalities.as_slice())
-            .unwrap_or(&DEFAULT_MODS[..]);
-
-        if mods.iter().any(|m| m == "image") && mods.iter().any(|m| m == "audio") {
-            "🎥"
-        } else if mods.iter().any(|m| m == "image") {
-            "🖼️"
-        } else if mods.iter().any(|m| m == "audio") {
-            "🎵"
-        } else if mods.iter().any(|m| m == "video") {
-            "📹"
-        } else {
-            "📝"
-        }
-    }
-
     pub fn insert_to(self, other: &mut Vec<Model>) {
         if let Some(sel) = other.iter_mut().find(|m| m.id == self.id) {
             *sel = self;
@@ -294,17 +241,4 @@ impl Model {
             other.push(self);
         }
     }
-}
-
-const DEFAULT_MODS: &[String] = &[];
-
-fn human_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
-    if bytes == 0 {
-        return "0 B".to_string();
-    }
-    let idx = ((bytes as f64).ln() / 1024.0_f64.ln()).floor() as usize;
-    let idx = idx.min(UNITS.len() - 1);
-    let val = bytes as f64 / 1024f64.powi(idx as i32);
-    format!("{val:.1} {}", UNITS[idx])
 }

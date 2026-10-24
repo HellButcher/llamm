@@ -1,22 +1,17 @@
-use std::{
-    borrow::Cow,
-    pin::{Pin, pin},
-    sync::Arc,
-    task::{Poll, ready},
-};
+use std::{borrow::Cow, pin::pin, sync::Arc};
 
 use crossterm::event::{Event, EventStream, KeyCode};
-use futures::{FutureExt, Stream, StreamExt, TryStream, TryStreamExt, stream::FusedStream};
+use futures::StreamExt;
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Layout},
     prelude::{Buffer, Rect},
-    style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span},
+    style::{Color, Style, Stylize},
+    text::Line,
     widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
 };
 
-use crate::api::{Client, Model, ModelUpdates};
+use crate::api::{Client, Model, ModelStatus, ModelUpdates};
 
 pub struct App {
     should_quit: bool,
@@ -69,12 +64,21 @@ impl App {
     }
 
     pub fn render(&mut self, frame: &mut Frame) {
-        let layout = Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]);
-        let [title_area, body_area] = frame.area().layout(&layout);
+        let layout = Layout::vertical([
+            Constraint::Length(1), // Title
+            Constraint::Fill(1),   // Table
+            Constraint::Length(1), // Legend
+        ]);
+        let [title_area, body_area, legend_area] = frame.area().layout(&layout);
 
         let title = Line::from("llamm — Model Manager").centered().bold();
         frame.render_widget(title, title_area);
         frame.render_widget(&mut self.models, body_area);
+
+        let legend = Line::from("✅ Loaded  ⏳ Loading  📥 Downloading  💤 Sleeping  ⚪ Unloaded  ❌ Failed | 🖼️ Image  🎵 Audio  📹 Video  📝 Text")
+            .centered()
+            .style(Style::default().fg(Color::Gray));
+        frame.render_widget(legend, legend_area);
     }
 
     fn handle_event(&mut self, event: crossterm::event::Event, client: &Arc<Client>) {
@@ -167,9 +171,9 @@ enum LoadingState {
 impl<'a> From<&'a Model> for Row<'a> {
     fn from(value: &'a Model) -> Self {
         Row::new(vec![
-            Cow::Borrowed(value.status_label()),
+            Cow::Borrowed(value.status.icon()),
             Cow::Borrowed(value.display_name()),
-            Cow::Owned(value.human_size()),
+            Cow::Owned(value.modality_icons()),
         ])
     }
 }
@@ -177,7 +181,7 @@ impl<'a> From<&'a Model> for Row<'a> {
 /// Sort models: loaded first, then sleeping, then loading, then alphabetical.
 fn sort_models(models: &mut [Model]) {
     models.sort_by(|a, b| {
-        status_order(a).cmp(&status_order(b)).then_with(|| {
+        a.status.rank().cmp(&b.status.rank()).then_with(|| {
             a.display_name()
                 .to_lowercase()
                 .cmp(&b.display_name().to_lowercase())
@@ -185,11 +189,90 @@ fn sort_models(models: &mut [Model]) {
     });
 }
 
-fn status_order(m: &Model) -> u8 {
-    match m.status.value.as_str() {
-        "loaded" => 0,
-        "sleeping" => 1,
-        "loading" | "downloading" => 2,
-        _ => 3,
+impl Model {
+    /// Display name: first alias or the model id.
+    pub fn display_name(&self) -> &str {
+        if let Some(alias) = self.aliases.first() {
+            alias
+        } else {
+            &self.id
+        }
+    }
+
+    pub fn status_label(&self) -> &str {
+        match (self.status.value.as_str(), self.status.failed) {
+            ("unloaded", true) => "failed",
+            ("loaded", _) => "loaded",
+            ("loading", _) => "loading…",
+            ("downloading", _) => "downloading…",
+            ("sleeping", _) => "sleeping",
+            ("unloaded", _) => "unloaded",
+            _ => self.status.value.as_str(),
+        }
+    }
+
+    pub fn human_size(&self) -> String {
+        self.meta
+            .as_ref()
+            .and_then(|m| m.size)
+            .map(human_size)
+            .unwrap_or_else(|| "?".to_string())
+    }
+
+    pub fn modality_icons(&self) -> String {
+        let mut icons = String::new();
+        if let Some(mods) = self
+            .architecture
+            .as_ref()
+            .map(|a| a.input_modalities.as_slice())
+        {
+            for m in mods {
+                match m.as_str() {
+                    "image" => icons.push_str("🖼️"),
+                    "audio" => icons.push('🎵'),
+                    "video" => icons.push('📹'),
+                    "text" => {} // ignored
+                    _ => icons.push('❓'),
+                }
+            }
+        }
+        icons
+    }
+}
+
+fn human_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+    if bytes == 0 {
+        return "0 B".to_string();
+    }
+    let idx = ((bytes as f64).ln() / 1024.0_f64.ln()).floor() as usize;
+    let idx = idx.min(UNITS.len() - 1);
+    let val = bytes as f64 / 1024f64.powi(idx as i32);
+    format!("{val:.1} {}", UNITS[idx])
+}
+
+impl ModelStatus {
+    fn rank(&self) -> u8 {
+        match (self.value.as_str(), self.failed) {
+            ("loaded", _) => 0,
+            ("sleeping", _) => 1,
+            ("loading", _) => 2,
+            ("downloading", _) => 3,
+            ("unloaded", true) => 4,
+            ("unloaded", false) => 5,
+            _ => 6,
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        match (self.value.as_str(), self.failed) {
+            ("unloaded", true) => "❌",
+            ("loaded", _) => "✅",
+            ("loading", _) => "⏳",
+            ("downloading", _) => "📥",
+            ("sleeping", _) => "💤",
+            ("unloaded", _) => "⚪",
+            _ => "❓",
+        }
     }
 }
