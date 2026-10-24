@@ -10,8 +10,9 @@ use ratatui::{
     text::Line,
     widgets::{Block, HighlightSpacing, Row, StatefulWidget, Table, TableState, Widget},
 };
+use tracing::error;
 
-use crate::api::{Client, Model, ModelStatus, ModelUpdates};
+use crate::api::{Client, Model, ModelInfo, ModelStatus, ModelUpdates};
 
 pub struct App {
     should_quit: bool,
@@ -49,10 +50,11 @@ impl App {
                         self.models.loading_state = LoadingState::Loaded;
                     }
                     Ok(ModelUpdates::Update(update)) => {
-                        update.insert_to(&mut self.models.models);
+                        update.apply_to(&mut self.models.models);
                         sort_models(&mut self.models.models);
                     }
                     Err(e) => {
+                        error!("Error receiving model updates: {:?}", e);
                         self.models.loading_state = LoadingState::Error(format!("{:?}", e));
                     }
                 },
@@ -95,14 +97,14 @@ impl App {
                 }
                 KeyCode::Enter | KeyCode::Char('l') => {
                     if let Some(selected) = self.models.selected_model() {
-                        let id = Cow::Owned(selected.id.clone());
+                        let id = Cow::Owned(selected.info.id.clone());
                         let client = Arc::clone(client);
                         tokio::spawn(async move { client.load_model(id).await });
                     }
                 }
                 KeyCode::Delete | KeyCode::Char('u') => {
                     if let Some(selected) = self.models.selected_model() {
-                        let id = Cow::Owned(selected.id.clone());
+                        let id = Cow::Owned(selected.info.id.clone());
                         let client = Arc::clone(client);
                         tokio::spawn(async move { client.unload_model(id).await });
                     }
@@ -172,8 +174,8 @@ impl<'a> From<&'a Model> for Row<'a> {
     fn from(value: &'a Model) -> Self {
         Row::new(vec![
             Cow::Borrowed(value.status.icon()),
-            Cow::Borrowed(value.display_name()),
-            Cow::Owned(value.modality_icons()),
+            Cow::Borrowed(value.info.display_name()),
+            Cow::Owned(value.info.modality_icons()),
         ])
     }
 }
@@ -181,15 +183,14 @@ impl<'a> From<&'a Model> for Row<'a> {
 /// Sort models: loaded first, then sleeping, then loading, then alphabetical.
 fn sort_models(models: &mut [Model]) {
     models.sort_by(|a, b| {
-        a.status.rank().cmp(&b.status.rank()).then_with(|| {
-            a.display_name()
-                .to_lowercase()
-                .cmp(&b.display_name().to_lowercase())
-        })
+        a.status
+            .rank()
+            .cmp(&b.status.rank())
+            .then_with(|| a.info.id.cmp(&b.info.id))
     });
 }
 
-impl Model {
+impl ModelInfo {
     /// Display name: first alias or the model id.
     pub fn display_name(&self) -> &str {
         if let Some(alias) = self.aliases.first() {
@@ -197,26 +198,6 @@ impl Model {
         } else {
             &self.id
         }
-    }
-
-    pub fn status_label(&self) -> &str {
-        match (self.status.value.as_str(), self.status.failed) {
-            ("unloaded", true) => "failed",
-            ("loaded", _) => "loaded",
-            ("loading", _) => "loading…",
-            ("downloading", _) => "downloading…",
-            ("sleeping", _) => "sleeping",
-            ("unloaded", _) => "unloaded",
-            _ => self.status.value.as_str(),
-        }
-    }
-
-    pub fn human_size(&self) -> String {
-        self.meta
-            .as_ref()
-            .and_then(|m| m.size)
-            .map(human_size)
-            .unwrap_or_else(|| "?".to_string())
     }
 
     pub fn modality_icons(&self) -> String {
@@ -240,6 +221,7 @@ impl Model {
     }
 }
 
+#[cfg(false)]
 fn human_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     if bytes == 0 {
@@ -253,26 +235,38 @@ fn human_size(bytes: u64) -> String {
 
 impl ModelStatus {
     fn rank(&self) -> u8 {
-        match (self.value.as_str(), self.failed) {
-            ("loaded", _) => 0,
-            ("sleeping", _) => 1,
-            ("loading", _) => 2,
-            ("downloading", _) => 3,
-            ("unloaded", true) => 4,
-            ("unloaded", false) => 5,
+        match self.value.as_str() {
+            "loaded" => 0,
+            "sleeping" => 1,
+            "loading" => 2,
+            "downloading" => 3,
+            "unloaded" if self.is_failed() => 4,
+            "unloaded" => 5,
             _ => 6,
         }
     }
 
     pub fn icon(&self) -> &'static str {
-        match (self.value.as_str(), self.failed) {
-            ("unloaded", true) => "❌",
-            ("loaded", _) => "✅",
-            ("loading", _) => "⏳",
-            ("downloading", _) => "📥",
-            ("sleeping", _) => "💤",
-            ("unloaded", _) => "⚪",
+        match self.value.as_str() {
+            "unloaded" if self.is_failed() => "❌",
+            "loaded" => "✅",
+            "loading" => "⏳",
+            "downloading" => "📥",
+            "sleeping" => "💤",
+            "unloaded" => "⚪",
             _ => "❓",
+        }
+    }
+
+    pub fn status_label(&self) -> &str {
+        match self.value.as_str() {
+            "unloaded" if self.is_failed() => "failed",
+            "loaded" => "loaded",
+            "loading" => "loading…",
+            "downloading" => "downloading…",
+            "sleeping" => "sleeping",
+            "unloaded" => "unloaded",
+            _ => self.value.as_str(),
         }
     }
 }
