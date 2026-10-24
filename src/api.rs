@@ -305,7 +305,7 @@ impl ModelSSE {
                     model.status.value = status;
                     model.status.exit_code = exit_code;
                     if let Some(info) = info {
-                        model.info = info;
+                        model.info.merge(info);
                     }
                     true
                 } else {
@@ -320,6 +320,27 @@ impl ModelSSE {
                 // For other events, we don't modify the model list
                 false
             }
+        }
+    }
+}
+
+impl ModelInfo {
+    pub fn merge(&mut self, other: ModelInfo) {
+        fn merge_string_vec(dest: &mut Vec<String>, src: Vec<String>) {
+            for item in src {
+                if !dest.contains(&item) {
+                    dest.push(item);
+                }
+            }
+        }
+
+        merge_string_vec(&mut self.aliases, other.aliases);
+        merge_string_vec(&mut self.tags, other.tags);
+        if let Some(arch) = other.architecture {
+            self.architecture = Some(arch);
+        }
+        if let Some(meta) = other.meta {
+            self.meta = Some(meta);
         }
     }
 }
