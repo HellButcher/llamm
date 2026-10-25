@@ -3,6 +3,7 @@ name = "llamm"
 description = "Lamma.cpp Model Monitor - A terminal application for monitoring which models are loaded in llama.cpp and to load/unload them"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/HellButcher/llamm.git"
 edition = "2024"
 
 [dependencies]
